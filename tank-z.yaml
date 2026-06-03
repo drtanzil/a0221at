@@ -1,0 +1,93 @@
+esphome:
+  name: tank-z
+  friendly_name: Tank Z
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+
+# Enable logging
+logger:
+  level: DEBUG
+
+# Enable Home Assistant API
+api:
+  encryption:
+    # Replace with your own generated 32-byte base64 key
+    key: "YOUR_HOME_ASSISTANT_API_ENCRYPTION_KEY"
+
+ota:
+  - platform: esphome
+    # Replace with your desired OTA password
+    password: "YOUR_OTA_PASSWORD"
+
+# ==================== WiFi Configuration ====================
+wifi:
+  networks:
+    - ssid: "YOUR_WIFI_SSID"
+      password: "YOUR_WIFI_PASSWORD"
+      priority: 100
+
+  ap:
+    ssid: "Tank-Z Fallback Hotspot"
+    # Replace with your desired fallback hotspot password
+    password: "YOUR_FALLBACK_HOTSPOT_PASSWORD"
+
+captive_portal:
+
+# ==================== Hardware Configuration ====================
+uart:
+  id: uart_bus
+  tx_pin: GPIO17
+  rx_pin: GPIO16
+  baud_rate: 9600
+  rx_buffer_size: 256
+
+# ==================== Sensor Section ====================
+sensor:
+  - platform: template
+    name: "Water Tank Distance"
+    id: tank_distance
+    unit_of_measurement: "cm"
+    icon: "mdi:arrow-expand-vertical"
+    // 3s interval is stable; lower intervals <3s cause issues when values > 44cm.
+    update_interval: 3s 
+    lambda: |-
+      // 1. Clean the buffer
+      if (id(uart_bus).available() > 0) {
+        uint8_t dummy[64];
+        size_t to_clean = id(uart_bus).available();
+        if (to_clean > 64) to_clean = 64;
+        id(uart_bus).read_array(dummy, to_clean);
+      }
+      
+      // 2. Trigger the sensor
+      uint8_t trigger_cmd[1] = {0x55};
+      id(uart_bus).write_array(trigger_cmd, 1);
+      
+      // 3. Wait 300ms for data arrival. 300ms interval is stable; lower intervals cause issues
+      unsigned long start_time = millis();
+      
+      while (id(uart_bus).available() < 4) {
+        if (millis() - start_time > 300) { 
+          break; 
+        }
+        delay(5);
+      }
+      
+      // 4. Data processing (clean execution without extra logging)
+      if (id(uart_bus).available() >= 4) {
+        uint8_t data[4];
+        id(uart_bus).read_array(data, 4);
+        
+        if (data[0] == 0xFF) {
+          uint16_t distance_mm = (data[1] << 8) + data[2];
+          uint8_t checksum = (data[0] + data[1] + data[2]) & 0xFF;
+          
+          if (checksum == data[3]) {
+            return distance_mm * 0.1; // Convert mm to cm
+          }
+        }
+      }
+      return {};
